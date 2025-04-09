@@ -10,38 +10,33 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Entity
-@Table(name = "cart")
+@Table(name = "CART")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class Cart {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    @Column(name = "cart_id")
+    @Column(name = "CARTID")
     private Long cartId;
-
-    @Column(name = "user_id")
+    
+    @Column(name = "TOTAL")
+    private BigDecimal total;
+    
+    @Column(name = "USER_ID")
     private Long userId;
     
-    @ManyToOne
-    @JoinColumn(name = "user_ref_id")
-    private User user;
-
-    @OneToMany(fetch = FetchType.EAGER, mappedBy = "cart", cascade = CascadeType.ALL)
+    @OneToMany(mappedBy = "cart", cascade = CascadeType.ALL, fetch = FetchType.EAGER)
     private List<CartDetails> cartDetails = new ArrayList<>();
-
-    private BigDecimal total = BigDecimal.ZERO;
-
-    public Cart(Long id) {
-        this.cartId = id;
-    }
-
-    public void updateTotalPrice() {
-        BigDecimal totalPrice = BigDecimal.ZERO;
-        for (CartDetails cartDetail : cartDetails) {
-            totalPrice = totalPrice.add(cartDetail.getProduct().getProductPrice()
-                    .multiply(BigDecimal.valueOf(cartDetail.getQuantity())));
+    
+    public void calculateTotal() {
+        if (cartDetails == null || cartDetails.isEmpty()) {
+            this.total = BigDecimal.ZERO;
+            return;
         }
-        this.total = totalPrice;
+        
+        this.total = cartDetails.stream()
+                .map(CartDetails::getTotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 }

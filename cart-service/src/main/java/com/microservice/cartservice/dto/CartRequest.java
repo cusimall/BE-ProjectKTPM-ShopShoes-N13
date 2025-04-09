@@ -10,14 +10,9 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class CartRequest {
-    @NotNull(message = "Product ID cannot be null")
+    @NotNull(message = "Product ID is required")
     private Long productId;
-
+    
     @Min(value = 1, message = "Quantity must be at least 1")
-    private int quantity;
-
-    public CartRequest(Long productId) {
-        this.productId = productId;
-        this.quantity = 1;
-    }
+    private Integer quantity = 1;
 }
