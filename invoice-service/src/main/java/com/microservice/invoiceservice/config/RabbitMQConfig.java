@@ -39,13 +39,11 @@ public class RabbitMQConfig {
         return BindingBuilder.bind(invoiceQueue).to(invoiceExchange).with("invoice.events");
     }
 
-    // Message converter for JSON serialization/deserialization
     @Bean
     public MessageConverter jsonMessageConverter() {
         return new Jackson2JsonMessageConverter();
     }
 
-    // Configure RabbitTemplate
     @Bean
     public AmqpTemplate amqpTemplate(ConnectionFactory connectionFactory) {
         final RabbitTemplate rabbitTemplate = new RabbitTemplate(connectionFactory);
