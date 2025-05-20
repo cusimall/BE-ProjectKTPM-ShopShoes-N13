@@ -8,7 +8,6 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 
-
 @Entity
 @Table(name = "INVOICE_ITEMS")
 @Data
