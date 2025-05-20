@@ -19,7 +19,6 @@ public class RabbitMQConfig {
     @Value("${invoice.queue.name}")
     private String invoiceQueue;
 
-    // Define Queues
     @Bean
     public Queue paymentInvoiceQueue() {
         return new Queue(paymentInvoiceQueue, true);
@@ -30,13 +29,11 @@ public class RabbitMQConfig {
         return new Queue(invoiceQueue, true);
     }
 
-    // Define Exchange
     @Bean
     public DirectExchange invoiceExchange() {
         return new DirectExchange("invoice.exchange");
     }
 
-    // Bind queue to exchange
     @Bean
     public Binding invoiceBinding(Queue invoiceQueue, DirectExchange invoiceExchange) {
         return BindingBuilder.bind(invoiceQueue).to(invoiceExchange).with("invoice.events");
