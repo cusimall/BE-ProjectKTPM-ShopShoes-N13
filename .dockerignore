@@ -1,5 +1,0 @@
-target/
-!target/*.jar
-.git
-.gitignore
-README.md 
