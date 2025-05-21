@@ -9,8 +9,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -75,20 +78,106 @@ public class CartController {
     
     @PostMapping("/{cartId}/checkout")
     @PreAuthorize("hasRole('USER')")
-    public ResponseEntity<Void> checkout(
+    public ResponseEntity<?> checkout(
             @PathVariable Long cartId,
             @RequestHeader("Authorization") String token) {
-        cartService.checkout(cartId, getTokenValue(token));
-        return ResponseEntity.ok().build();
+        try {
+            Map<String, Object> result = cartService.checkout(cartId, getTokenValue(token));
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            log.error("Checkout error: {}", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of(
+                    "status", "error",
+                    "message", e.getMessage()
+                ));
+        }
     }
     
-    @DeleteMapping("/{cartId}/clear")
+    @PostMapping("/invoice/{invoiceId}/payment")
     @PreAuthorize("hasRole('USER')")
-    public ResponseEntity<Void> clearCart(@PathVariable Long cartId) {
-        cartService.clearCart(cartId);
-        return ResponseEntity.ok().build();
+    public ResponseEntity<?> initiatePayment(
+            @PathVariable Long invoiceId,
+            @RequestBody Map<String, Object> paymentDetails,
+            @RequestHeader("Authorization") String token) {
+        try {
+            log.info("Initiating payment for invoice ID {}", invoiceId);
+            
+            // Check if invoice exists and belongs to the user
+            try {
+                Map<String, Object> invoiceData = webClientBuilder.build()
+                        .get()
+                        .uri(apiGatewayUrl + "/api/v1/invoices/" + invoiceId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + getTokenValue(token))
+                        .retrieve()
+                        .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                        .block();
+                
+                if (invoiceData == null || !invoiceData.containsKey("data")) {
+                    return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                            .body(Map.of(
+                                "status", "error",
+                                "message", "Invoice not found"
+                            ));
+                }
+            } catch (WebClientResponseException e) {
+                log.error("Error checking invoice: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
+                return ResponseEntity.status(e.getStatusCode())
+                        .body(Map.of(
+                            "status", "error",
+                            "message", "Failed to verify invoice: " + e.getMessage()
+                        ));
+            }
+            
+            // Create payment request
+            Map<String, Object> paymentRequest = new HashMap<>();
+            paymentRequest.put("invoiceId", invoiceId);
+            paymentRequest.put("description", "Payment for order #" + invoiceId);
+            
+            // Add optional parameters if provided
+            if (paymentDetails.containsKey("bankCode")) {
+                paymentRequest.put("bankCode", paymentDetails.get("bankCode"));
+            }
+            
+            if (paymentDetails.containsKey("language")) {
+                paymentRequest.put("language", paymentDetails.get("language"));
+            }
+            
+            if (paymentDetails.containsKey("returnUrl")) {
+                paymentRequest.put("returnUrl", paymentDetails.get("returnUrl"));
+            }
+            
+            // Call payment service
+            Map<String, Object> paymentResponse = webClientBuilder.build()
+                    .post()
+                    .uri(apiGatewayUrl + "/api/v1/payments/create")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getTokenValue(token))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(paymentRequest)
+                    .retrieve()
+                    .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                    .block();
+            
+            log.info("Payment initiated successfully for invoice {}", invoiceId);
+            return ResponseEntity.ok(paymentResponse);
+            
+        } catch (WebClientResponseException e) {
+            log.error("Payment service error: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
+            return ResponseEntity.status(e.getStatusCode())
+                    .body(Map.of(
+                        "status", "error",
+                        "message", "Payment initiation failed: " + e.getMessage(),
+                        "code", e.getStatusCode().value()
+                    ));
+        } catch (Exception e) {
+            log.error("Payment initiation error: {}", e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of(
+                        "status", "error",
+                        "message", "Payment initiation failed: " + e.getMessage()
+                    ));
+        }
     }
-
     
     @GetMapping("/invoice/{invoiceId}")
     @PreAuthorize("hasRole('USER')")
@@ -96,40 +185,83 @@ public class CartController {
             @PathVariable Long invoiceId,
             @RequestHeader("Authorization") String token) {
         try {
-            // Add "v1/" to the path
-            Object invoiceDetails = webClientBuilder.build()
+            log.info("Retrieving invoice details for ID: {}", invoiceId);
+            
+            // Call invoice-service through API gateway
+            Map<String, Object> invoiceDetails = webClientBuilder.build()
                     .get()
-                    .uri(apiGatewayUrl + "/api/v1/invoices/" + invoiceId) // CORRECTED PATH WITH v1/
+                    .uri(apiGatewayUrl + "/api/v1/invoices/" + invoiceId)
                     .header(HttpHeaders.AUTHORIZATION, "Bearer " + getTokenValue(token))
                     .retrieve()
-                    .bodyToMono(Object.class)
+                    .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
                     .block();
             
             return ResponseEntity.ok(invoiceDetails);
+        } catch (WebClientResponseException e) {
+            log.error("Error from invoice service: {} - {}", 
+                    e.getStatusCode(), e.getResponseBodyAsString());
+            
+            return ResponseEntity.status(e.getStatusCode())
+                    .body(Map.of(
+                        "status", "error",
+                        "message", "Failed to get invoice: " + e.getMessage(),
+                        "code", e.getStatusCode().value()
+                    ));
         } catch (Exception e) {
+            log.error("Error retrieving invoice: {}", e.getMessage(), e);
+            
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("error", "Failed to get invoice: " + e.getMessage()));
+                    .body(Map.of(
+                        "status", "error",
+                        "message", "Failed to get invoice: " + e.getMessage()
+                    ));
         }
     }
     
-    @GetMapping("/test-invoice")
-    public ResponseEntity<?> testInvoiceService() {
+    @GetMapping("/payment/{invoiceId}/status")
+    @PreAuthorize("hasRole('USER')")
+    public ResponseEntity<?> getPaymentStatus(
+            @PathVariable Long invoiceId,
+            @RequestHeader("Authorization") String token) {
         try {
-            String result = webClientBuilder.build()
+            log.info("Retrieving payment status for invoice ID: {}", invoiceId);
+            
+            // Call payment-service through API gateway
+            Map<String, Object> paymentStatus = webClientBuilder.build()
                     .get()
-                    .uri(apiGatewayUrl + "/api/v1/invoices/test")
+                    .uri(apiGatewayUrl + "/api/v1/payments/status/" + invoiceId)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getTokenValue(token))
                     .retrieve()
-                    .bodyToMono(String.class)
+                    .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
                     .block();
-                    
-            return ResponseEntity.ok(Map.of("result", result));
+            
+            return ResponseEntity.ok(paymentStatus);
+        } catch (WebClientResponseException e) {
+            log.error("Error from payment service: {} - {}", 
+                    e.getStatusCode(), e.getResponseBodyAsString());
+            
+            return ResponseEntity.status(e.getStatusCode())
+                    .body(Map.of(
+                        "status", "error",
+                        "message", "Failed to get payment status: " + e.getMessage(),
+                        "code", e.getStatusCode().value()
+                    ));
         } catch (Exception e) {
+            log.error("Error retrieving payment status: {}", e.getMessage(), e);
+            
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Map.of(
-                        "error", e.getMessage(),
-                        "type", e.getClass().getName()
+                        "status", "error",
+                        "message", "Failed to get payment status: " + e.getMessage()
                     ));
         }
+    }
+    
+    @DeleteMapping("/{cartId}/clear")
+    @PreAuthorize("hasRole('USER')")
+    public ResponseEntity<Void> clearCart(@PathVariable Long cartId) {
+        cartService.clearCart(cartId);
+        return ResponseEntity.ok().build();
     }
     
     private String getTokenValue(String authHeader) {
