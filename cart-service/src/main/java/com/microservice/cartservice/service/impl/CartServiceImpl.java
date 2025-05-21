@@ -21,6 +21,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.Authentication;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -62,8 +64,15 @@ public class CartServiceImpl implements CartService {
     public Cart addToCart(Long userId, CartRequest request, String token) {
         Cart cart = getOrCreateCart(userId);
         
+        // If no token provided, try to get it from SecurityContext
+        String actualToken = token;
+        if (actualToken == null || actualToken.isEmpty()) {
+            actualToken = extractTokenFromSecurityContext();
+            log.debug("Using token from security context: {}", actualToken != null ? "Available" : "Not available");
+        }
+        
         // Get product information from product service
-        ProductDTO product = getProductDetails(request.getProductId(), token);
+        ProductDTO product = getProductDetails(request.getProductId(), actualToken);
         
         // Check if item already exists in cart
         Optional<CartDetails> existingDetail = cartDetailsRepository.findByCartCartIdAndProductId(
@@ -94,15 +103,30 @@ public class CartServiceImpl implements CartService {
         return cartRepository.save(cart);
     }
 
+    /**
+     * Helper method to extract JWT token from SecurityContext
+     */
+    private String extractTokenFromSecurityContext() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication != null && authentication.getCredentials() instanceof String) {
+            return (String) authentication.getCredentials();
+        }
+        return null;
+    }
+
     @Override
     public List<CartDetails> getCartDetails(Long cartId) {
         Cart cart = cartRepository.findById(cartId)
                 .orElseThrow(() -> new RuntimeException("Cart not found"));
+        
+        // Get current authentication token if available
+        String token = extractTokenFromSecurityContext();
+        log.debug("Using token for product details: {}", token != null ? "Available" : "Not available");
                 
         // Load product details for each cart item
         cart.getCartDetails().forEach(detail -> {
             try {
-                ProductDTO product = getProductDetails(detail.getProductId(), null);
+                ProductDTO product = getProductDetails(detail.getProductId(), token);
                 detail.setProduct(product);
             } catch (Exception e) {
                 log.error("Error loading product {}: {}", detail.getProductId(), e.getMessage());
@@ -118,20 +142,20 @@ public class CartServiceImpl implements CartService {
     @Transactional
     public void removeFromCart(Long cartId, Long productId) {
         try {
-            // 1. Tìm cart
+            // 1. Find cart
             Cart cart = cartRepository.findById(cartId)
                     .orElseThrow(() -> new RuntimeException("Cart not found"));
                     
-            // 2. Xóa relationship trong bộ nhớ
+            // 2. Remove relationship in memory
             cart.getCartDetails().removeIf(detail -> detail.getProductId().equals(productId));
             
-            // 3. Lưu cart để cập nhật lại relationship
+            // 3. Save cart to update relationship
             cartRepository.save(cart);
             
-            // 4. Sau đó xóa cart detail từ repository
+            // 4. Delete cart detail from repository
             cartDetailsRepository.deleteByCartCartIdAndProductId(cartId, productId);
             
-            // 5. Tính toán lại tổng giỏ hàng
+            // 5. Recalculate cart total
             BigDecimal total = BigDecimal.ZERO;
             for (CartDetails detail : cart.getCartDetails()) {
                 if (detail.getTotal() != null) {
@@ -140,10 +164,10 @@ public class CartServiceImpl implements CartService {
             }
             cart.setTotal(total);
             
-            // 6. Lưu lại cart
+            // 6. Save cart again
             cartRepository.save(cart);
             
-            // 7. Clear Hibernate session để đảm bảo
+            // 7. Clear Hibernate session
             entityManager.flush();
             entityManager.clear();
             
@@ -168,7 +192,13 @@ public class CartServiceImpl implements CartService {
             return null;
         } else {
             // Update quantity
-            ProductDTO product = getProductDetails(productId, token);
+            // If no token provided, try to get it from SecurityContext
+            String actualToken = token;
+            if (actualToken == null || actualToken.isEmpty()) {
+                actualToken = extractTokenFromSecurityContext();
+            }
+            
+            ProductDTO product = getProductDetails(productId, actualToken);
             cartDetail.setQuantity(quantity);
             cartDetail.setTotal(product.getProductPrice().multiply(BigDecimal.valueOf(quantity)));
             cartDetailsRepository.save(cartDetail);
@@ -183,8 +213,10 @@ public class CartServiceImpl implements CartService {
 
     @Override
     @Transactional
-    public void checkout(Long cartId, String token) {
+    public Map<String, Object> checkout(Long cartId, String token) {
         try {
+            log.info("Starting checkout process for cart ID: {}", cartId);
+            
             Cart cart = cartRepository.findById(cartId)
                     .orElseThrow(() -> new RuntimeException("Cart not found"));
             
@@ -192,40 +224,121 @@ public class CartServiceImpl implements CartService {
                 throw new RuntimeException("Cannot checkout empty cart");
             }
             
-            // Process token
+            // Ensure token has correct format
             String actualToken = token;
             if (token.startsWith("Bearer ")) {
                 actualToken = token.substring(7);
             }
-
-            log.info("Token format check - First 10 chars: {}",
-                    actualToken.length() > 10 ? actualToken.substring(0, 10) + "..." : actualToken);
-
-            // Create request body
+            
+            // Create invoice request
             Map<String, Object> invoiceRequest = new HashMap<>();
-            invoiceRequest.put("cartId", cartId);
             invoiceRequest.put("userId", cart.getUserId());
+            invoiceRequest.put("totalAmount", cart.getTotal());
             
-            // Fix the URI path - ADD "v1/" to the path
-            Object response = webClientBuilder.build()
-                    .post()
-                    .uri(apiGatewayUrl + "/api/v1/invoices/create-from-cart") // CORRECTED PATH WITH v1/
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + actualToken)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(invoiceRequest)
-                    .retrieve()
-                    .bodyToMono(Object.class)
-                    .block();
+            // Build cart items list
+            List<Map<String, Object>> items = new ArrayList<>();
+            for (CartDetails detail : cart.getCartDetails()) {
+                Map<String, Object> item = new HashMap<>();
+                item.put("productId", detail.getProductId());
+                item.put("quantity", detail.getQuantity());
+                
+                // Calculate unit price from total and quantity
+                BigDecimal unitPrice = detail.getTotal()
+                        .divide(BigDecimal.valueOf(detail.getQuantity()), 2, RoundingMode.HALF_UP);
+                item.put("price", unitPrice);
+                
+                items.add(item);
+                log.debug("Added item to checkout: productId={}, quantity={}, price={}", 
+                        detail.getProductId(), detail.getQuantity(), unitPrice);
+            }
+            invoiceRequest.put("items", items);
             
-            log.info("Invoice created successfully: {}", response);
-            
-            // Clear cart after successful checkout
-            clearCart(cartId);
-            
-            log.info("Checkout completed successfully for cart ID: {}", cartId);
+            // Call invoice service
+            log.info("Calling invoice service to create invoice with {} items", items.size());
+            try {
+                Map<String, Object> response = webClientBuilder.build()
+                        .post()
+                        .uri(apiGatewayUrl + "/api/v1/invoices/create-from-cart")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + actualToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(invoiceRequest)
+                        .retrieve()
+                        .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                        .block();
+                
+                log.info("Invoice created successfully: {}", response);
+                
+                // Update product inventory
+                updateProductInventory(cart.getCartDetails(), actualToken);
+                
+                // Clear cart after successful checkout
+                clearCart(cartId);
+                
+                log.info("Checkout completed successfully for cart ID: {}", cartId);
+                
+                // Create response with invoice ID for payment initiation
+                Map<String, Object> result = new HashMap<>();
+                result.put("status", "success");
+                result.put("message", "Checkout completed successfully");
+                
+                // Extract invoice ID from response
+                if (response != null && response.containsKey("data")) {
+                    Map<String, Object> invoiceData = (Map<String, Object>) response.get("data");
+                    if (invoiceData.containsKey("id")) {
+                        result.put("invoiceId", invoiceData.get("id"));
+                    }
+                    if (invoiceData.containsKey("totalAmount")) {
+                        result.put("totalAmount", invoiceData.get("totalAmount"));
+                    }
+                }
+                
+                return result;
+            } catch (WebClientResponseException e) {
+                log.error("Error response from invoice service: {} - {}", 
+                        e.getStatusCode(), e.getResponseBodyAsString(), e);
+                throw new RuntimeException("Checkout failed: " + e.getStatusCode() + " - " + e.getMessage());
+            }
         } catch (Exception e) {
             log.error("Error during checkout: {}", e.getMessage(), e);
             throw new RuntimeException("Checkout failed: " + e.getMessage());
+        }
+    }
+    
+    private void updateProductInventory(List<CartDetails> cartDetails, String token) {
+        log.info("Updating product inventory for {} items", cartDetails.size());
+        
+        for (CartDetails detail : cartDetails) {
+            try {
+                // Get current product
+                ProductDTO product = getProductDetails(detail.getProductId(), token);
+                
+                // Calculate new quantity
+                int newQuantity = product.getQuantity() - detail.getQuantity();
+                
+                // Ensure quantity doesn't go below zero
+                if (newQuantity < 0) newQuantity = 0;
+                
+                // Update inventory using the dedicated inventory endpoint
+                Map<String, Integer> request = new HashMap<>();
+                request.put("quantity", newQuantity);
+                
+                webClientBuilder.build()
+                        .patch()
+                        .uri(apiGatewayUrl + "/api/products/" + detail.getProductId() + "/inventory")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .bodyValue(request)
+                        .retrieve()
+                        .bodyToMono(Object.class)
+                        .block();
+                
+                log.debug("Updated inventory for product {}: {} -> {}", 
+                        detail.getProductId(), product.getQuantity(), newQuantity);
+            } catch (Exception e) {
+                log.error("Error updating inventory for product {}: {}", 
+                        detail.getProductId(), e.getMessage());
+                // Continue with other products even if one fails
+            }
         }
     }
     
@@ -238,30 +351,70 @@ public class CartServiceImpl implements CartService {
         cart.getCartDetails().clear();
         cart.setTotal(BigDecimal.ZERO);
         cartRepository.save(cart);
+        log.info("Cart {} cleared successfully", cartId);
     }
     
     private ProductDTO getProductDetails(Long productId, String token) {
-        log.info("Fetching product details for ID: {}", productId);
+        log.debug("Fetching product details for ID: {}", productId);
         
         try {
-            WebClient.RequestHeadersSpec<?> request = webClientBuilder.build()
+            // First try to use the internal endpoint which is designed for microservice communication
+            WebClient.RequestHeadersSpec<?> internalRequest = webClientBuilder.build()
                     .get()
                     .uri(apiGatewayUrl + "/api/products/internal/" + productId);
                     
+            // Add token to internal request if available
             if (token != null && !token.isEmpty()) {
-                request = request.header(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+                internalRequest = internalRequest.header(HttpHeaders.AUTHORIZATION, 
+                        token.startsWith("Bearer ") ? token : "Bearer " + token);
             }
             
-            // Gọi API và lấy dữ liệu trực tiếp
-            ProductDTO product = request.retrieve()
+            ProductDTO product = internalRequest.retrieve()
                     .bodyToMono(ProductDTO.class)
+                    .onErrorResume(WebClientResponseException.class, error -> {
+                        log.warn("Internal product endpoint failed, falling back to public endpoint: {}", 
+                                error.getMessage());
+                        
+                        // Fall back to public endpoint with ResponseObject wrapper
+                        WebClient.RequestHeadersSpec<?> request = webClientBuilder.build()
+                            .get()
+                            .uri(apiGatewayUrl + "/api/products/" + productId);
+                                
+                        if (token != null && !token.isEmpty()) {
+                            request = request.header(HttpHeaders.AUTHORIZATION, 
+                                    token.startsWith("Bearer ") ? token : "Bearer " + token);
+                        }
+                        
+                        return request.retrieve()
+                            .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                            .map(response -> {
+                                if (response != null && response.containsKey("data")) {
+                                    ObjectMapper mapper = new ObjectMapper();
+                                    mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+                                    
+                                    // Extract product from the ResponseObject structure
+                                    Object dataObj = response.get("data");
+                                    
+                                    // Check if the data is wrapped in an Optional
+                                    if (dataObj instanceof Map) {
+                                        Map<String, Object> dataMap = (Map<String, Object>) dataObj;
+                                        if (dataMap.containsKey("get")) {
+                                            dataObj = dataMap.get("get");
+                                        }
+                                    }
+                                    
+                                    return mapper.convertValue(dataObj, ProductDTO.class);
+                                }
+                                throw new RuntimeException("Product data not found in response");
+                            });
+                    })
                     .block();
-                    
-            log.info("Successfully retrieved product: {}", product);
+            
+            log.debug("Successfully retrieved product: {}", product.getProductName());
             return product;
         } catch (Exception e) {
             log.error("Error fetching product details: {}", e.getMessage(), e);
-            return null; // Trả về null thay vì throw exception
+            throw new RuntimeException("Failed to get product details: " + e.getMessage());
         }
     }
 } 
