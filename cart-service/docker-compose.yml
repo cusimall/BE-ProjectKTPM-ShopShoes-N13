@@ -1,0 +1,85 @@
+version: '3.8'
+
+services:
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456789
+      MYSQL_DATABASE: cart-service
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - shopshoes-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p123456789"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Eureka Discovery Server
+  discovery-server:
+    image: discovery-server:latest
+    container_name: discovery-server
+    ports:
+      - "8761:8761"
+    networks:
+      - shopshoes-network
+    restart: on-failure
+
+  # API Gateway
+  api-gateway:
+    image: api-gateway:latest
+    container_name: api-gateway
+    ports:
+      - "8081:8081"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - shopshoes-network
+    depends_on:
+      - discovery-server
+    restart: on-failure
+
+  # Product Service (cart-service phụ thuộc vào product-service)
+  product-service:
+    image: product-service:latest
+    container_name: product-service
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - shopshoes-network
+    depends_on:
+      - mysql
+      - discovery-server
+    restart: on-failure
+
+  # Cart Service
+  cart-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cart-service
+    ports:
+      - "8084:8084"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+    networks:
+      - shopshoes-network
+    depends_on:
+      - mysql
+      - discovery-server
+      - product-service
+      - api-gateway
+    restart: on-failure
+
+networks:
+  shopshoes-network:
+    driver: bridge
+
+volumes:
+  mysql-data: 

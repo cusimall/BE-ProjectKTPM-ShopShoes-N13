@@ -8,16 +8,29 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import java.util.List;
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import lombok.extern.slf4j.Slf4j;
 
 import jakarta.validation.Valid;
-import java.util.List;
+import java.util.HashMap;
 
 @RestController
 @RequestMapping("/api/carts")
 @RequiredArgsConstructor
+@Slf4j
 public class CartController {
 
     private final CartService cartService;
+    private final WebClient.Builder webClientBuilder;
+    @Value("${api.gateway.url}")
+    private String apiGatewayUrl;
     
     @GetMapping("/user/{userId}")
     @PreAuthorize("hasRole('USER')")
@@ -74,6 +87,49 @@ public class CartController {
     public ResponseEntity<Void> clearCart(@PathVariable Long cartId) {
         cartService.clearCart(cartId);
         return ResponseEntity.ok().build();
+    }
+
+    
+    @GetMapping("/invoice/{invoiceId}")
+    @PreAuthorize("hasRole('USER')")
+    public ResponseEntity<?> getInvoiceDetails(
+            @PathVariable Long invoiceId,
+            @RequestHeader("Authorization") String token) {
+        try {
+            // Add "v1/" to the path
+            Object invoiceDetails = webClientBuilder.build()
+                    .get()
+                    .uri(apiGatewayUrl + "/api/v1/invoices/" + invoiceId) // CORRECTED PATH WITH v1/
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + getTokenValue(token))
+                    .retrieve()
+                    .bodyToMono(Object.class)
+                    .block();
+            
+            return ResponseEntity.ok(invoiceDetails);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to get invoice: " + e.getMessage()));
+        }
+    }
+    
+    @GetMapping("/test-invoice")
+    public ResponseEntity<?> testInvoiceService() {
+        try {
+            String result = webClientBuilder.build()
+                    .get()
+                    .uri(apiGatewayUrl + "/api/v1/invoices/test")
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block();
+                    
+            return ResponseEntity.ok(Map.of("result", result));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of(
+                        "error", e.getMessage(),
+                        "type", e.getClass().getName()
+                    ));
+        }
     }
     
     private String getTokenValue(String authHeader) {

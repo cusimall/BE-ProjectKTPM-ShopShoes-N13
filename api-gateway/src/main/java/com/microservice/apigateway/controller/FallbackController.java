@@ -44,4 +44,20 @@ public class FallbackController {
         response.put("message", "Email Service is currently unavailable. Please try again later.");
         return new ResponseEntity<>(response, HttpStatus.SERVICE_UNAVAILABLE);
     }
+
+    @GetMapping("/cart-service")
+    public ResponseEntity<Map<String, String>> cartServiceFallback() {
+        Map<String, String> response = new HashMap<>();
+        response.put("status", "error");
+        response.put("message", "Cart Service is currently unavailable. Please try again later.");
+        return new ResponseEntity<>(response, HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    @GetMapping("/invoice-service")
+    public ResponseEntity<Map<String, String>> invoiceServiceFallback() {
+        Map<String, String> response = new HashMap<>();
+        response.put("status", "error");
+        response.put("message", "Invoice Service is currently unavailable. Please try again later.");
+        return new ResponseEntity<>(response, HttpStatus.SERVICE_UNAVAILABLE);
+    }
 } 

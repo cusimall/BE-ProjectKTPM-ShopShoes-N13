@@ -46,6 +46,20 @@ public class RouteConfig {
                                         .setFallbackUri("forward:/fallback/email-service")))
                         .uri("lb://emailsender-service"))
                 
+                // Cart Service Routes
+                .route("cart-service", r -> r.path("/api/carts/**")
+                        .filters(f -> f.circuitBreaker(
+                                config -> config.setName("cartServiceCircuitBreaker")
+                                        .setFallbackUri("forward:/fallback/cart-service")))
+                        .uri("lb://cart-service"))
+                
+                // Invoice Service Routes
+                .route("invoice-service", r -> r.path("/api/invoices/**")
+                        .filters(f -> f.circuitBreaker(
+                                config -> config.setName("invoiceServiceCircuitBreaker")
+                                        .setFallbackUri("forward:/fallback/invoice-service")))
+                        .uri("lb://invoice-service"))
+                
                 // You can add more service routes as needed
                 
                 .build();

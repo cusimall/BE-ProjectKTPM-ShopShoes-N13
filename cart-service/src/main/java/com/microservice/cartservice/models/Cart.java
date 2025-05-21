@@ -30,13 +30,14 @@ public class Cart {
     private List<CartDetails> cartDetails = new ArrayList<>();
     
     public void calculateTotal() {
-        if (cartDetails == null || cartDetails.isEmpty()) {
-            this.total = BigDecimal.ZERO;
-            return;
+        BigDecimal total = BigDecimal.ZERO;
+        if (cartDetails != null) {
+            for (CartDetails detail : cartDetails) {
+                if (detail != null && detail.getTotal() != null) {
+                    total = total.add(detail.getTotal());
+                }
+            }
         }
-        
-        this.total = cartDetails.stream()
-                .map(CartDetails::getTotal)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        this.total = total;
     }
 }
